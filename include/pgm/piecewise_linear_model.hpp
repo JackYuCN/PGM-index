@@ -72,8 +72,10 @@ private:
     size_t lower_start = 0;
     size_t upper_start = 0;
     size_t points_in_hull = 0;
+    // {a, b, c, d} in the original paper
     Point rectangle[4];
 
+    // triangle test，即“左转法”
     auto cross(const Point &O, const Point &A, const Point &B) const {
         auto OA = A - O;
         auto OB = B - O;
@@ -124,11 +126,13 @@ public:
             return true;
         }
 
-        auto slope1 = rectangle[2] - rectangle[0];
-        auto slope2 = rectangle[3] - rectangle[1];
+        auto slope1 = rectangle[2] - rectangle[0]; // slope<a, c>
+        auto slope2 = rectangle[3] - rectangle[1]; // slope<b, d>
+        // Theorem 2 in original paper
         bool outside_line1 = p1 - rectangle[2] < slope1;
         bool outside_line2 = p2 - rectangle[3] > slope2;
 
+        // p is outside the two extreme lines, more than epsilon
         if (outside_line1 || outside_line2) {
             points_in_hull = 0;
             return false;
@@ -140,6 +144,8 @@ public:
             auto min_i = lower_start;
             for (auto i = lower_start + 1; i < lower.size(); i++) {
                 auto val = lower[i] - p1;
+                // 这里的逻辑存疑
+                // 原paper是找到最大的点，而非一有大的就退出
                 if (val > min)
                     break;
                 min = val;
@@ -186,10 +192,10 @@ public:
         return true;
     }
 
-    CanonicalSegment get_segment() {
+    CanonicalSegment get_segment(int32_t cnt, X end) {
         if (points_in_hull == 1)
-            return CanonicalSegment(rectangle[0], rectangle[1], first_x);
-        return CanonicalSegment(rectangle, first_x);
+            return CanonicalSegment(rectangle[0], rectangle[1], first_x, end, cnt);
+        return CanonicalSegment(rectangle, first_x, end, cnt);
     }
 
     void reset() {
@@ -205,11 +211,18 @@ class OptimalPiecewiseLinearModel<X, Y>::CanonicalSegment {
 
     Point rectangle[4];
     X first;
+    X end;
+    int32_t cnt;
 
-    CanonicalSegment(const Point &p0, const Point &p1, X first) : rectangle{p0, p1, p0, p1}, first(first) {};
+    CanonicalSegment(const Point &p0, const Point &p1, X first) : rectangle{p0, p1, p0, p1}, first(first), end(), cnt() {};
 
     CanonicalSegment(const Point (&rectangle)[4], X first)
-        : rectangle{rectangle[0], rectangle[1], rectangle[2], rectangle[3]}, first(first) {};
+        : rectangle{rectangle[0], rectangle[1], rectangle[2], rectangle[3]}, first(first), end(), cnt() {};
+
+    CanonicalSegment(const Point &p0, const Point &p1, X first, X end, int32_t cnt) : rectangle{p0, p1, p0, p1}, first(first), end(end), cnt(cnt) {};
+
+    CanonicalSegment(const Point (&rectangle)[4], X first, X end, int32_t cnt)
+        : rectangle{rectangle[0], rectangle[1], rectangle[2], rectangle[3]}, first(first), end(end), cnt(cnt) {};
 
     bool one_point() const {
         return rectangle[0].x == rectangle[2].x && rectangle[0].y == rectangle[2].y
@@ -221,6 +234,10 @@ public:
     CanonicalSegment() = default;
 
     X get_first_x() const { return first; }
+    
+    X get_end() const { return end; }
+
+    int32_t get_cnt() const { return cnt; }
 
     std::pair<long double, long double> get_intersection() const {
         auto &p0 = rectangle[0];
@@ -284,19 +301,24 @@ size_t make_segmentation(size_t n, size_t epsilon, Fin in, Fout out) {
     OptimalPiecewiseLinearModel<X, Y> opt(epsilon);
     opt.add_point(p.first, p.second);
 
+    int32_t cnt = 0;
+    X end_key = p.first;
     for (size_t i = 1; i < n; ++i) {
         auto next_p = in(i);
         if (next_p.first == p.first)
             continue;
         p = next_p;
         if (!opt.add_point(p.first, p.second)) {
-            out(opt.get_segment());
+            out(opt.get_segment(cnt, end_key));
+            cnt = 0;
             opt.add_point(p.first, p.second);
             ++c;
         }
+        cnt++;
+        end_key = p.first;
     }
 
-    out(opt.get_segment());
+    out(opt.get_segment(cnt, end_key));
     return ++c;
 }
 

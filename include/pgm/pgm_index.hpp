@@ -26,6 +26,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <cstdio>
 
 namespace pgm {
 
@@ -200,6 +201,13 @@ public:
         build(first, last, Epsilon, EpsilonRecursive, segments, levels_offsets);
     }
 
+    // 最底层为 [0, levels_offsets[1])
+    std::vector<Segment> get_first_level() {
+        auto begin = segments.begin();
+        auto end = segments.begin() + levels_offsets[1] - 1;
+        return std::vector<Segment>(begin, end);
+    }
+
     /**
      * Returns the approximate position and the range where @p key can be found.
      * @param key the value of the element to search for
@@ -240,6 +248,8 @@ struct PGMIndex<K, Epsilon, EpsilonRecursive, Floating>::Segment {
     K key;             ///< The first key that the segment indexes.
     Floating slope;    ///< The slope of the segment.
     int32_t intercept; ///< The intercept of the segment.
+    K end_key;
+    int32_t hot_cnt;
 
     Segment() = default;
 
@@ -254,6 +264,8 @@ struct PGMIndex<K, Epsilon, EpsilonRecursive, Floating>::Segment {
             throw std::overflow_error("Change the type of Segment::intercept to int64");
         slope = cs_slope;
         intercept = cs_intercept;
+        end_key = cs.get_end();
+        hot_cnt = cs.get_cnt();
     }
 
     friend inline bool operator<(const Segment &s, const K &k) { return s.key < k; }
