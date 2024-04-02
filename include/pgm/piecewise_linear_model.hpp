@@ -94,8 +94,8 @@ public:
         lower.reserve(1u << 16);
     }
 
-    bool add_point(const X &x, const Y &y) {
-        if (points_in_hull > 0 && x <= last_x)
+    bool add_point(const X &x, const Y &y, bool ismodifed) {
+        if (points_in_hull > 0 && x <= last_x && !ismodifed)
             throw std::logic_error("Points must be increasing by x.");
 
         last_x = x;
@@ -134,7 +134,7 @@ public:
 
         // p is outside the two extreme lines, more than epsilon
         if (outside_line1 || outside_line2) {
-            points_in_hull = 0;
+            // points_in_hull = 0;
             return false;
         }
 
@@ -192,10 +192,45 @@ public:
         return true;
     }
 
-    CanonicalSegment get_segment(int32_t cnt, X end) {
+    std::pair<bool, SY> get_approximate_point(const X &x, const X &x_next, const Y &y_next) {
+        if (x_next == 0) {
+            points_in_hull = 0;
+            return {false, 0};
+        }
+
+        auto max_y = std::numeric_limits<Y>::max();
+        auto min_y = std::numeric_limits<Y>::lowest();
+        Point p1{x_next, y_next >= max_y - epsilon ? max_y : y_next + epsilon};
+        Point p2{x_next, y_next <= min_y + epsilon ? min_y : y_next - epsilon};
+
+        auto slope1 = rectangle[2] - rectangle[0]; // slope<a, c>
+        auto slope2 = rectangle[3] - rectangle[1]; // slope<b, d>
+        // Theorem 2 in original paper
+        bool outside_line1 = p1 - rectangle[2] < slope1;
+        bool outside_line2 = p2 - rectangle[3] > slope2;
+
+        // 如果下一个点满足当前segment的斜率要求，那么就进行迁移；否则直接退出
+        if (outside_line1 || outside_line2) {
+            points_in_hull = 0;
+            return {false, 0};
+        }
+
+        // 求出点的位置
+        // NOTE: 这里的cast不确定是否有问题
+        auto[slope, intercept] = get_segment().get_floating_point_segment(x);
+        return {true, intercept};
+    }
+
+    CanonicalSegment get_segment(int32_t cnt, X end, std::vector<std::pair<Y, SY>> &vec) {
         if (points_in_hull == 1)
-            return CanonicalSegment(rectangle[0], rectangle[1], first_x, end, cnt);
-        return CanonicalSegment(rectangle, first_x, end, cnt);
+            return CanonicalSegment(rectangle[0], rectangle[1], first_x, end, cnt, vec);
+        return CanonicalSegment(rectangle, first_x, end, cnt, vec);
+    }
+
+    CanonicalSegment get_segment() {
+        if (points_in_hull == 1)
+            return CanonicalSegment(rectangle[0], rectangle[1], first_x);
+        return CanonicalSegment(rectangle, first_x);
     }
 
     void reset() {
@@ -213,16 +248,19 @@ class OptimalPiecewiseLinearModel<X, Y>::CanonicalSegment {
     X first;
     X end;
     int32_t cnt;
+    using SY = LargeSigned<Y>;
+    std::vector<std::pair<Y, SY>> migration_list;
 
     CanonicalSegment(const Point &p0, const Point &p1, X first) : rectangle{p0, p1, p0, p1}, first(first), end(), cnt() {};
 
     CanonicalSegment(const Point (&rectangle)[4], X first)
         : rectangle{rectangle[0], rectangle[1], rectangle[2], rectangle[3]}, first(first), end(), cnt() {};
 
-    CanonicalSegment(const Point &p0, const Point &p1, X first, X end, int32_t cnt) : rectangle{p0, p1, p0, p1}, first(first), end(end), cnt(cnt) {};
+    CanonicalSegment(const Point &p0, const Point &p1, X first, X end, int32_t cnt, std::vector<std::pair<Y, SY>> &vec)
+        : rectangle{p0, p1, p0, p1}, first(first), end(end), cnt(cnt), migration_list(vec) {};
 
-    CanonicalSegment(const Point (&rectangle)[4], X first, X end, int32_t cnt)
-        : rectangle{rectangle[0], rectangle[1], rectangle[2], rectangle[3]}, first(first), end(end), cnt(cnt) {};
+    CanonicalSegment(const Point (&rectangle)[4], X first, X end, int32_t cnt, std::vector<std::pair<Y, SY>> &vec)
+        : rectangle{rectangle[0], rectangle[1], rectangle[2], rectangle[3]}, first(first), end(end), cnt(cnt), migration_list(vec) {};
 
     bool one_point() const {
         return rectangle[0].x == rectangle[2].x && rectangle[0].y == rectangle[2].y
@@ -238,6 +276,8 @@ public:
     X get_end() const { return end; }
 
     int32_t get_cnt() const { return cnt; }
+
+    std::vector<std::pair<Y, SY>> get_ml() const { return migration_list; }
 
     std::pair<long double, long double> get_intersection() const {
         auto &p0 = rectangle[0];
@@ -262,6 +302,7 @@ public:
         if (one_point())
             return {0, (rectangle[0].y + rectangle[1].y) / 2};
 
+        // 这里是一些复杂的取整计算，还没太看明白
         if constexpr (std::is_integral_v<X> && std::is_integral_v<Y>) {
             auto slope = rectangle[3] - rectangle[1];
             auto intercept_n = slope.dy * (SX(origin) - rectangle[1].x);
@@ -295,30 +336,54 @@ size_t make_segmentation(size_t n, size_t epsilon, Fin in, Fout out) {
 
     using X = typename std::invoke_result_t<Fin, size_t>::first_type;
     using Y = typename std::invoke_result_t<Fin, size_t>::second_type;
+    using SX = LargeSigned<X>;
+    using SY = LargeSigned<Y>;
     size_t c = 0;
     auto p = in(0);
 
     OptimalPiecewiseLinearModel<X, Y> opt(epsilon);
-    opt.add_point(p.first, p.second);
+    opt.add_point(p.first, p.second, false);
 
     int32_t cnt = 0;
     X end_key = p.first;
+    std::vector<std::pair<Y, SY>> migration_list;
     for (size_t i = 1; i < n; ++i) {
         auto next_p = in(i);
-        if (next_p.first == p.first)
+        if (next_p.first == p.first) {
             continue;
+        }
         p = next_p;
-        if (!opt.add_point(p.first, p.second)) {
-            out(opt.get_segment(cnt, end_key));
+        if (!opt.add_point(p.first, p.second, false)) {
+            // 考虑通过地址迁移来满足delta-approximation的情况
+            // 具体条件为下一个点（next_p）不经修改仍落在斜率范围内
+            // 注：
+            //  1. 这里不考虑duplicate情况（上面的308行实际上考虑了，不过我们的应用场景中不会出现duplicate key）
+            if (i < n - 1)
+                next_p = in(i + 1);
+            else 
+                next_p.first = 0;
+            auto[flag, y_new] = opt.get_approximate_point(p.first, next_p.first, next_p.second);
+            if (flag) {
+                // 记录下当前的地址迁移信息，后面保存在segment结构中
+                migration_list.push_back({p.second, y_new});
+                if (!opt.add_point(p.first, y_new, true)) { // 按理这个点一定能加入当前segment
+                    throw std::logic_error("Undefined behavior.");
+                }
+                cnt++;
+                end_key = p.first;
+                continue;
+            }
+            out(opt.get_segment(cnt, end_key, migration_list));       
+            migration_list.clear();
             cnt = 0;
-            opt.add_point(p.first, p.second);
+            opt.add_point(p.first, p.second, false);
             ++c;
         }
         cnt++;
         end_key = p.first;
     }
 
-    out(opt.get_segment(cnt, end_key));
+    out(opt.get_segment(cnt, end_key, migration_list));
     return ++c;
 }
 

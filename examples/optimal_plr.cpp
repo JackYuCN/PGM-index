@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #include <filesystem>
+#include <assert.h>
 
 int main(int argc, char *argv[]) {
 
@@ -51,15 +52,28 @@ int main(int argc, char *argv[]) {
 
     auto first_level = index.get_first_level();
     int32_t start_index = 0;
-    outputFile << ",start_addr,end_addr,start_index,end_index,stride,addr_space_cover,hot_page_cover,dram_fit,dram_gap\n";
+    outputFile << ",start_addr,end_addr,start_index,end_index,stride,addr_space_cover,hot_page_cover,dram_fit,dram_gap,migration_cnt,mispredict,mispredict_percent\n";
     for (auto i = 0; i < first_level.size() - 1; ++i) {
-        auto start_key = first_level[i].key;
-        auto end_key = first_level[i].end_key;
-        auto hpc = first_level[i].hot_cnt;
+        auto seg = first_level[i];
+        auto hpc = seg.hot_cnt;
         auto end_index = start_index + hpc - 1;
-        auto asc = end_key - start_key + 1; // asc->addr_space_cover
-        snprintf(arr, 1000, "%d,0x%lx,0x%lx,%d,%d,%f,%d,%d,%d,%d\n", \
-            i, start_key, end_key, start_index, end_index, first_level[i].slope, asc, hpc, hpc, asc - hpc);
+        auto asc = seg.end_key - seg.key + 1; // asc->addr_space_cover
+        // 统计预测情况
+        auto mispredict = 0;
+        for (auto j = start_index; j <= end_index; j++) {
+            auto key = data[j];
+            auto range = index.search(key);
+            if (range.pos - range.lo > epsilon || range.hi - range.pos > epsilon + 3) {
+                printf("ERROR: {low, pos, hi} = {%ld, %ld, %ld}\n", range.lo, range.pos, range.hi);
+                exit(-1);
+            }    
+            if (range.pos != j) {
+                mispredict++;
+            }
+        }
+        auto percent = static_cast<float>(mispredict) / hpc * 100;
+        snprintf(arr, 1000, "%d,0x%lx,0x%lx,%d,%d,%f,%ld,%d,%d,%ld,%ld,%d,%.2f%%\n", \
+            i, seg.key, seg.end_key, start_index, end_index, seg.slope, asc, hpc, hpc, asc - hpc, seg.migration_list.size(), mispredict, percent);
         outputFile << arr;
         start_index += hpc;
     }

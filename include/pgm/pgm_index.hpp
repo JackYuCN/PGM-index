@@ -251,6 +251,9 @@ struct PGMIndex<K, Epsilon, EpsilonRecursive, Floating>::Segment {
     K end_key;
     int32_t hot_cnt;
 
+    using SY = internal::LargeSigned<size_t>;
+    std::vector<std::pair<size_t, SY>> migration_list;
+
     Segment() = default;
 
     Segment(K key, Floating slope, int32_t intercept) : key(key), slope(slope), intercept(intercept) {};
@@ -258,14 +261,12 @@ struct PGMIndex<K, Epsilon, EpsilonRecursive, Floating>::Segment {
     explicit Segment(size_t n) : key(std::numeric_limits<K>::max()), slope(), intercept(n) {};
 
     explicit Segment(const typename internal::OptimalPiecewiseLinearModel<K, size_t>::CanonicalSegment &cs)
-        : key(cs.get_first_x()) {
+        : key(cs.get_first_x()), end_key(cs.get_end()), hot_cnt(cs.get_cnt()), migration_list(cs.get_ml()) {
         auto[cs_slope, cs_intercept] = cs.get_floating_point_segment(key);
         if (cs_intercept > std::numeric_limits<decltype(intercept)>::max())
             throw std::overflow_error("Change the type of Segment::intercept to int64");
         slope = cs_slope;
         intercept = cs_intercept;
-        end_key = cs.get_end();
-        hot_cnt = cs.get_cnt();
     }
 
     friend inline bool operator<(const Segment &s, const K &k) { return s.key < k; }
